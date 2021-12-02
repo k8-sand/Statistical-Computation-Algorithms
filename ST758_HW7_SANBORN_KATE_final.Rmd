@@ -1,0 +1,702 @@
+---
+title: "ST758 HOMEWORK 7"
+author: "KATE SANBORN"
+date: "10/27/2021"
+output: word_document
+---
+
+### PROBLEM 1. Generate logistic regression data. Form the logistic cost function. Evaluate f(beta) at true values of beta. Interpret.
+
+```{r}
+#fix n and d
+n=1000 #rows
+d=50 #parameters
+
+set.seed(1001)
+x<-matrix(ncol=d, nrow=n)
+x[,1]<-1 #intercept
+
+#fill data matrix
+for (j in 2:d){
+  x[,j]<-rnorm(n,0,1)
+}
+
+#since beta 11 - 50 to produce y is = 1
+yvec<-rowSums(x[,11:50])
+yvec<-as.matrix(yvec)
+
+#nonbinary response (binary constraint removed)
+#yy<-exp(yvec)/(1+exp(yvec))
+#yy<-as.matrix(yy)
+
+# pass through an inv-logit function
+pr=arm::invlogit(yvec)
+
+#i can also create the inverse logit fxn by hand
+sigmoid=function(z){
+  1/(1+exp(-z))
+}
+
+
+y = rbinom(1000,1,pr)      # bernoulli response variable
+
+y<-as.matrix(y)
+#good now I have X data and Y binary response
+
+
+################################################################################
+#obj fxn first attempt
+fx_logistic <- function(x,y,beta) {
+  sum <- 0
+  n=nrow(x)
+  for (i in 1:n) { #1 to number of rows in x
+    sum <- sum + (-y[i,]%*%x[i,]%*%beta) + log(1+exp(x[i,]%*%beta))
+  }
+  return (sum/n)
+}
+
+my.loglik <- function(x, y, beta)
+{
+  bm = as.matrix(beta)
+  xb =  x %*% t(bm)
+  xb<-as.matrix(xb)
+  # this returns the negative loglikelihood
+  return(sum(y*xb) - sum(log(1 + exp(xb)))/(-1*nrow(y)))
+}
+#######################USE THIS FUNCTION ###############################
+#alternative cost fxn form I will use this version
+logLikelihood <- function(x, y, beta) {
+  logW <- x %*% t(beta)
+  logw<-as.matrix(logW)
+  likelihood <- (y*logW) - log((1+exp(logW)))
+  return (sum(likelihood)/(-1*nrow(y)))
+}
+
+################################################################################
+
+################################################################################
+#now let's work on getting cost function "true" value through
+#beta 1 -10 in (-0.2,0.2) and betas 11 -50 in (0.8,1.2)
+
+#take uniform samples for the vector in the above ranges and evaluate f(beta) (my_cost)
+
+N=100 #number of sim samples I'll take for each beta
+betasim=matrix(nrow=ncol(x),ncol=N)
+
+
+for (j in 1:10){
+  betasim[j,]=runif(N,min=-0.2,max=0.2)
+}
+for (k in 11:50){
+  betasim[k,]=runif(N,min=0.8,max=1.2)
+}
+
+#now create a 0 and 1 beta vector for true beta
+trubet<-matrix(ncol=1,nrow=50)
+for(i in 1:10){
+  trubet[i,]<-0
+}
+for (j in 11:50){
+  trubet[j,]<-1
+}
+
+#evaluate f(beta) on true beta to compare to sim below
+fx_logistic(x,y,trubet)
+#0.207 is the true minimum of th function using the true beta values!
+```
+Evaluating the cost function at the true beta values we see that the true f(beta) = 0.207.
+
+Now we want to run the cost function on each of the 100 simulated beta vectors I created!
+
+```{r}
+result=matrix(ncol=1, nrow=N)
+
+for (i in 1:N){
+  result[i,]<-fx_logistic(x,y,betasim[,i])
+  
+}
+result
+```
+Question asks us to see if f(beta) obtains min value at true value of beta and interpret.
+No - does not obtain true min because the beta's were randomly generated but centered around thei true values.
+We introduced natural noise into the random generation of the beta vector, thus the f(beta) evaluated on those beta vectors will not obtain the min. 
+
+
+################################################################################
+### PROBLEM 2. use coordinate descent, gradient descent, stochastic grad descent, newton, and BFGS. Now we develop 5 algorithms to optimize and get the arg min of the obj function
+
+First note that the learning rate, alpha, can be determined via univariate search methods. I will include a function below that can be used for that. However, when I implemented these in my algorithms, they ran very very slowly. 
+Thus, to keep the results comparable (i.e. controlling the step size), I will fix the step size at 0.01. 
+```{r}
+# This function determines the bounds for univariate section search.
+set_interval <-  function(g,x0){
+  eps <- 0.1
+  lower <- TRUE
+  
+  if(g(x0+eps) < g(x0)){
+    lb <- x0
+  } else {
+    ub <- x0
+    lower <- FALSE
+  }
+  
+  k <- 1
+  if (lower){
+    while(g(x0+(k-1)*eps)>g(x0+(k)*eps)){
+      k = k+1
+    }
+    ub <- x0 + k*eps
+  } else {
+    while(g(x0-(k-1)*eps)>g(x0-(k)*eps)){
+      k = k+1
+    }
+    lb <- x0 - k*eps
+  }
+
+  return(c(lb,ub))
+}
+
+# this function executes golden section search.
+golden_section_search <- function(g, bounds){
+  max_iter <- 2000
+  bl <- bounds[1]
+  bu <- bounds[2]
+  
+  phi <- (sqrt(5)-1)/2
+  
+  bs <- bu - phi*(bu-bl)
+  bn <- bs
+  
+  con_crit = 1e-6
+  
+  k <- 1
+  while (abs(bu[k]-bl[k])/abs(bs[k]) > con_crit & k < max_iter){
+    bn[k] <- bl[k] + (bu[k] - bs[k])
+    if (g(bn[k]) < g(bs[k])) {
+      t <- bs[k] 
+      bs[k+1] <- bn[k]
+      bn[k+1] <- t
+    } else {
+      bs[k+1] <- bs[k]
+      bn[k+1] <- bn[k]
+    }
+    
+    if (bs[k+1] < bn[k+1]){
+      bu[k+1] <- bn[k+1]
+      bl[k+1] <- bl[k]
+    } else {
+      bl[k+1] <- bn[k+1]
+      bu[k+1] <- bu[k]
+    }
+  
+    k <- k + 1
+  }
+  
+  return(list(result=(bu[k]+bl[k])/2,iter=k))
+}
+```
+
+Note that in the notes we cover some stopping criterion. I chose to focus primarily on tolerance and maxiterations. However, for the purpose of this assignment, I will demonstrate my knowledge of the criteria by constructing a function that encompasses all.
+
+```{r}
+
+#i will create a gradient function later for some other algorithms, but will tailor this one for coord descent and stopping criterion
+# a function for the partial derivative of the objective function
+# with respect to a specified element of the coefficient vector beta.
+partf <- function(j,b,y,x){
+  # j = index of beta for which to take partial
+  # b = beta vector
+  # y = response vector
+  # X = model matrix  
+  return((-1/length(y))*sum(y*x[,j]-x[,j]*(1/(1+exp(-x%*%b)))))
+}
+
+
+# a function for the gradient of the objective function using
+# the partial derivative function - partf.
+gradf <- function(b,y,x){
+  # b = beta vector
+  # y = response vector
+  # X = model matrix
+  temp <- seq(1,length(b))
+  return(unlist(lapply(temp, partf, b, y, x)))
+}
+
+# a function to check stopping criteria
+stop_crit <- function(b1,             # beta vector
+                      b2,             # next beta vector
+                      f,              # objective function
+                      iter,           # current iteration
+                      time,           # current time
+                      iter_lim=100,    # iteration limit
+                      time_lim=60,    # time limit
+                      delta=1e-6){   # convergence crit
+  
+  if (iter<3) {
+    # check if we are past the 3rd iteration
+    return(0)
+  } else {
+    # check all five stopping criteria
+    t1 <- norm(b2-b1, type = "2") < delta
+    #t2 <- f(b2,y,X)-f(b1,y,X) > -delta
+    t2 <- FALSE
+    t3 <- norm(gradf(b1,y,x), type = "2") < delta
+    t4 <- iter > iter_lim
+    #t5 <- time > time_lim
+    t5 <- FALSE
+    
+    # return the index of true stopping conditions
+    if(any(t1,t2,t3,t4,t5)){
+      return(which(c(t1,t2,t3,t4,t5)==TRUE))
+    } else {
+      return(0)
+    }
+  }
+}
+
+```
+First I create a coordinate descent algorithm which essentially runs a univariate optimization on each element of beta iteratively.
+```{r}
+############
+#coord descent algorithm
+
+#i attempted to write an all in one algorithm but it kept crashing
+
+#so I asked for help from fellow classmate, Matt Shisler
+#I will use the stopping criterion method for this one
+
+#use this logistic function (same as earlier version but catered to this code)
+f <- function(b,y,x){
+  return(-(1/length(y))*sum(y*x%*%b-log(1+exp(x%*%b))))
+}
+
+#########################START ALGORITHM
+# initialize
+iter  <- 2                                      # need two starting vectors for stop_crit function
+bs <- list(rep(0,ncol(x)))                 # initial vector...choosing to start with 0
+bs[[2]] <- bs[[1]]                              # copied initial vector
+start_time  <- proc.time()[3]                   # start the clock!
+
+# start algo
+while (sum(stop_crit(bs[[iter-1]],              # check stopping criteria
+                     bs[[iter]],                # see stop_crit helped function
+                     f, 
+                     iter,
+                     proc.time[3]-start_time)==0)){
+  
+  
+  bs[[iter+1]] <- bs[[iter]]                    # load next inter of solution
+  for (cyc in 1:50){                            # cycle through each element of bs
+    uni_obj_func <- function(v){                # 1) redefine a univariate function
+      bs[[iter]][cyc] <- v                      # in terms of the index of the current
+      return(f(as.matrix(bs[[iter]]),y,x))                # cycle.
+    }
+    
+    # construct bounds and execute golden section search
+    bounds <- set_interval(uni_obj_func,bs[[iter]][cyc])
+    result <- golden_section_search(uni_obj_func, bounds)$result
+    
+    # assign result to the next iteration
+    bs[[iter+1]][cyc] <- result
+  }
+  
+  iter      <- iter + 1                        # increment iteration
+}
+proc.time()[3]-start_time
+
+#extract results
+f(bs[[iter]],y,x) #the log likelihood converged to 0.186
+
+#what are the beta estimates?
+length(bs)
+
+#the length shows 101. But subtract off 1 because we copied the initialized vector at the beginning into the second iteration of the list.
+#so this took 100 iterations
+
+#let's take a look at the 101st element in the list which is where the algorithm stopped and optimized each of the 50 betas
+
+bs[[101]] #this did pretty well!
+
+#let's get a measure of MSE 
+
+mean(abs(trubet-bs[[101]])^2)
+#very small - good!
+
+```
+The time taken: 73.07 seconds for 100 iterations.
+The loglikelihood output from optimized estimated beta vector: 0.186 (less than the true f(beta) = 0.207)
+The MSE for the estimated optimized beta's is 0.049 which is very small indiciating that Coordinate descent did a pretty good job.
+
+
+
+```{r}
+############
+# GRADIENT FUNCTION ----
+grad <- function(x, y, beta) {
+  w <- x %*% t(beta) # Multiply matrix x with weights(beta)
+  scores <- sigmoid(w)
+  gradient <- (t(x) %*% (y-scores))
+  return(t(gradient)/(nrow(y)))
+}
+
+
+#learning rate without line search
+alpha = 0.01
+
+
+#use this one
+gradientdes <- function(x, y, learningRate = bestlearningRate, 
+                        noOfIterations = 25000, 
+                        toleranceTerm=1e-5) {
+  #data wrangling
+  # Add x_0 = 1 as the first column
+  x0 <- if(is.vector(x)) length(x) else nrow(x)
+  if(is.vector(x) || (!all(x[,1] == 1))) x <- cbind(rep(1, x0), x)
+  if(is.vector(y)) y <- matrix(y)
+  
+  noOfFeatures <- ncol(x)
+  localTrainLogLikelihood <- c(0:0)
+  # Initialize the beta(Weights)
+  newBeta <- matrix(rep(0, noOfFeatures), nrow=1)
+  index=0
+  start=proc.time()
+  for (i in 1:noOfIterations) {
+    index=index+1
+    previousBeta <- newBeta
+    localTrainLogLikelihood[i] <- logLikelihood(x, y, newBeta)
+    newBeta <- previousBeta + learningRate * grad(x, y, previousBeta)
+    if(all(is.na(newBeta))) {
+      return (previousBeta)
+    }
+    if(all(abs(newBeta - previousBeta) < toleranceTerm)) { #this is the other termination criteria we can use
+      break;
+    }
+  }
+  end=proc.time()
+  return (list("newBeta" = newBeta, "logLikelihood" = localTrainLogLikelihood, index, (end-start)))
+}
+
+gradientresult<-gradientdes(x,y,learningRate = alpha)
+
+#extract information
+gradientresult[[3]] #number of iterations
+
+gradientresult[[4]][[3]] #time taken
+
+gradientresult[[2]][[25000]] #converged log likelihood estimate
+
+as.matrix(gradientresult[[1]]) #optimized betas
+
+#MSE OF optimized betas
+gradientbeta<-unlist(gradientresult[[1]])
+mean((trubet-t(gradientbeta))^2)
+
+#mse is 0.0196
+```
+This runs quickly but uses the maxiterations and does not end with tolerance. This may never converge otherwise.
+We see the results specifically the time and accuracy:
+The computation time was 13.89 seconds and uses the full max iterations and does not end with the tolerance.
+This algorithm actually performs pretty well in terms of the beta estimates!
+They are pretty close to the true beta values! Additionally, the evaluation of the logistic function doesn't hit the true f(beta), but close.
+
+f(beta) = 0.17 < true f(beta) = 0.207
+
+The MSE (as a meausre of accuracy) = 0.0196. This is smaller than the Coordinate descent output.
+
+Overall, we have improved in terms of estimating/optimizing beta!
+
+```{r}
+################################################################################
+#now let's try out stochastic grad descent
+
+#same process as above but now we use a mini batch because as we saw in grad descent
+#grad descent cannot handle large matrices very well...it may never converge
+
+#have to alter because x will be a row not a matrix in stochastic gradient so 
+#need to change how scores is stored and calculated. Need to convert it to a vector of length 1000 to be compatible with y
+gradsto <- function(x, y, beta) {
+  w <- x %*% t(beta) # Multiply matrix x with weights(beta)
+  scores <- sigmoid(w)
+  gradient <- (x %*% (y-scores))
+  return(t(gradient))
+}
+
+
+#need to do the same for the likelihood fxn
+my.loglik2 <- function(x, y, beta)
+{
+  bm = as.matrix(beta)
+  xb =  x %*% t(bm)
+  # this returns the negative loglikelihood
+  return(sum(y*xb) - sum(log(1 + exp(xb)))/(-1))
+}
+
+#fixing learning rate instead of using univariate section search method. 
+stochgrad<-function(x, y, learningRate = 0.01, 
+                    noOfIterations = 10000, 
+                    toleranceTerm=1e-6) {
+  
+  # Add x_0 = 1 as the first column
+  x0 <- if(is.vector(x)) length(x) else nrow(x)
+  if(is.vector(x) || (!all(x[,1] == 1))) 
+    x <- cbind(rep(1, x0), x)
+
+  
+  noOfFeatures <- ncol(x)
+  m=nrow(y)
+  
+  #NEW
+  #SHUFFLE DATA
+  
+  localTrainLogLikelihood <- c(0:0)
+  # Initialize the beta(Weights)
+  newBeta <- matrix(rep(0, noOfFeatures), nrow=1)
+  index=0
+  start=proc.time()
+  for (i in 1:noOfIterations) {
+    index=index+1
+    #pick a random x & y combo
+    dat<-cbind(y,x)
+    xsh<-dat[sample(nrow(dat),1),]
+    xsh<-as.matrix(xsh)
+    xsh<-t(xsh)
+    ys<-xsh[,1]
+    xx<-xsh[,c(2:51)]
+    previousBeta <- newBeta
+    localTrainLogLikelihood[i] <- my.loglik2(xx, ys, previousBeta) #using fx logistic because it uses col notation
+    newBeta <- previousBeta + learningRate* gradsto(xx, ys, previousBeta)
+    if(all(is.na(newBeta))) {
+      return (previousBeta)
+    }
+    if(all(abs(newBeta - previousBeta) < toleranceTerm)) { #this is the other termination criteria we can use
+      break;
+    }
+  }
+  end=proc.time()
+  return (list("newBeta" = newBeta, "logLikelihood" = localTrainLogLikelihood, index, (end-start)))
+}
+
+stochasticresult<-stochgrad(x,y)
+
+#extract information
+stochasticresult[[3]]
+#2574 iterations...ended with tolerance this time!
+
+stochasticresult[[4]][[3]]
+
+#elapsed time = 0.39 seconds EVEN BETTER!
+
+stochasticresult[[2]][[2574]] #wildly off f(beta) estimate
+
+stochasticresult[[1]]
+
+#MSE of estimate
+stobeta<-unlist(stochasticresult[[1]])
+mean((trubet-t(stobeta))^2)
+
+#mse is 0.247
+```
+The difference with this algorithm is that it shuffles x and y pairs and pick a random row to use in the gradient to update the estimate of beta.
+We see an improvement as it pertains to the computational efficiency (runs in less than a second and ends earlier than the max iteration based on tolerance).
+
+HOWEVER, the estimates for the f(beta) & estimated beta vector is worse. The MSE for the beta vector is = 0.247 (much larger than the two previous methods).
+
+
+
+```{r}
+################################################################################
+#MV NEWTON
+#mv newton is notoriously slow for needing to compute the hessian
+
+require (numDeriv)
+
+#redefining sigmoid (used in my hand calc of hessian)
+g <- function(theta) 1 / (1 + exp(-1 * x %*% t(theta)))
+
+#testing hessian from numDeriv
+#theta<-t(betasim[,1]) #trying it out on the first simulated beta from earlier
+#H <- hessian(logLikelihood, theta)
+
+###########################
+# hand calculate the hessian at beta just to make sure I understand
+#
+#m <- nrow(x)       # ie number of training examples
+#H_hand <- matrix(nrow=nrow(betasim), ncol=nrow(betasim))
+#for (row in 1:nrow(H_hand)){
+#  for (col in 1:ncol(H_hand)){
+#    H_hand[ row, col ] <- 0
+#    for (j in 1:m){
+#      h <- g(x[j, ], t(betasim[,1]))
+#      H_hand[row, col ] <- H_hand[ row, col ] + x[j, row] * x[j, col] * h * (1 - h)
+#    }
+#  }
+#}
+#H_hand <- H_hand * -1
+
+#works
+############################
+
+#REDINING MY GRADIENT AND LOG LIKELIHOOD FXN TO BE COMPATIBLE WITH HOW I WROTE ALGORITHM
+#just comes down to transposing properly
+grad2 <- function(x, y, beta) {
+  w <- x %*% t(beta) # Multiply matrix x with weights(beta)
+  scores <- sigmoid(w)
+  gradient <- (t(x) %*% (y-scores))
+  return(gradient/(nrow(y))) #removed the transpose from original grad function i made
+}
+
+logLikelihood2 <- function(beta) { #removed x and y to get hessian for beta
+  logW <- x %*% t(beta)
+  logw<-as.matrix(logW)
+  likelihood <- (y*logW) - log((1+exp(logW)))
+  return (sum(likelihood)/(-1*nrow(y)))
+}
+
+#################################
+#ALGORITHM
+
+mvnewt<-function(x,y,learningRate=0.01,toler=1e-6,noOfIterations=2000){
+  noOfFeatures <- ncol(x)
+  m=nrow(y)
+  
+  localTrainLogLikelihood <- c(0:0)
+  # Initialize the beta(Weights)
+  newBeta <- matrix(rep(0, noOfFeatures), nrow=1)
+  index=0
+  start=proc.time()
+  for (i in 1:noOfIterations) {
+    index=index+1
+    previousBeta <- newBeta
+
+    localTrainLogLikelihood[i] <- logLikelihood2(newBeta) #using fx logistic because it uses col notation
+    new <- 0.01 * matlib::Ginv(hessian(logLikelihood2,previousBeta))%*%(grad2(x, y, previousBeta))
+    
+    #NOTE: I originally used solve(), but due to the seed chosen in generating my data the algorithm eventually iterated to a point where      singularity was reached. Thus, I changed to Ginv() from matlib pkg.
+    
+    
+    newBeta <- previousBeta + t(as.matrix(new)) #need to transpose to put in conformable form
+    
+    if(all(is.na(newBeta))) {
+      return (previousBeta)
+    }
+    if(all(abs(newBeta - previousBeta) < toler)) { #this is the other termination criteria we can use
+      break;
+    }
+  }
+  end=proc.time()
+  return (list("newBeta" = newBeta, "logLikelihood" = localTrainLogLikelihood, index, (end-start)))
+}
+ 
+mvnresult<-mvnewt(x,y,learningRate = 0.01)
+
+#EXTRACTING INFORMATION
+
+mvnresult[[3]] #no. iterations
+mvnresult[[4]][[3]] #elapsed time
+mvnresult[[2]][[mvnresult[[3]]]] #converged log likelihood estimate
+
+#MSE
+resultt<-unlist(mvnresult[["newBeta"]])
+mean((trubet-t(resultt))^2)
+#LARGE!
+```
+THE FIRST TIME I RAN IT THIS WAS THE OUTPUT! THIS USED SOLVE() TO INVERT THE HESSIAN. BUT THE SECOND TIME I RAN IT, IT CRASHED SO I SWITCHED TO GINV() FROM MATLIB. 
+
+This output is more accurate and is from the solve() output. 
+The pitfall is the time elapsed and the iterations taken. It ended on tolerance, but the inversion of the Hessian each time is computationally expensive.
+
+#output
+#$newBeta
+[,1]       [,2]      [,3]      [,4]       [,5]       [,6]      [,7]       [,8]       [,9]       [,10]    [,11]    [,12]   [,13]
+[1,] -0.1224674 -0.1333649 0.1108454 0.2276445 -0.1268897 0.07662182 0.0067474 0.05901958 -0.1453958 -0.05619612 1.488855 1.227821 1.18555
+[,14]  [,15]     [,16]     [,17]    [,18]    [,19]    [,20]   [,21]    [,22]    [,23]    [,24]    [,25]    [,26]   [,27]     [,28]
+[1,] 1.188976 1.2459 0.7920594 0.9748214 1.340162 1.181799 1.066682 1.16367 1.320269 1.105284 1.407067 1.033901 1.456739 1.21742 0.9166704
+[,29]   [,30]    [,31]    [,32]    [,33]    [,34]    [,35]    [,36]    [,37]     [,38]    [,39]     [,40]    [,41]    [,42]    [,43]
+[1,] 1.152663 1.28949 1.077792 1.191691 1.121442 1.044526 1.311253 1.099908 1.143315 0.9664707 1.156259 0.9990791 1.280395 1.346765 1.207076
+[,44]    [,45]    [,46]    [,47]     [,48]    [,49]    [,50]
+[1,] 0.9246964 1.226701 1.133872 0.861432 0.8367115 1.071728 1.168994
+
+#$logLikelihood
+0.1753971
+#[ reached getOption("max.print") -- omitted 245 entries ]
+
+#mvnresult[[3]]
+2497
+
+#[[4]][[3]]
+elapsed 
+2345.09
+
+HOWEVER, when using the Ginv() output we see a drastic difference in the accuracy. The computational cost is about the same as the solve() output, but the MSE is 33 which is LARGE. Somehow the Ginv() inverts the Hessian in such a way that we end up with beta estimates FAR FAR from accurate,
+
+
+
+We can hopefully improve computational expense through BFGS
+
+```{r}
+################################################################################
+#NEWTON & BFGS
+#this should run faster because we aren't expending as much computational power trying to invert the hessian each iteration
+grad3 <- function(x, y, beta) {
+  w <- x %*% beta # Multiply matrix x with weights(beta)
+  scores <- sigmoid(w)
+  gradient <- (t(x) %*% (y-scores))
+  return(gradient/(-1*nrow(y))) #removed the transpose from original grad function i made
+}
+# initial guess for beta
+bfgsnewt<-function(x,y,alpha,tol=1e-6,maxit=2000){
+
+  noOfFeatures <- ncol(x)
+  m=nrow(y)
+  
+  localTrainLogLikelihood <- c(0:0)
+  # Initialize the beta(Weights)
+  prvsbeta <- matrix(rep(0, noOfFeatures), ncol=1)
+  index=0
+  P=diag(noOfFeatures)
+  start=proc.time()
+  for (i in 1:maxit) {
+    index=index+1
+    deltabeta<-(-1*P)%*%grad3(x,y,prvsbeta)
+    deltabeta<-alpha*deltabeta #could choose alphs via line search or set to a value like 0.01
+    g<-grad3(x,y,(prvsbeta+deltabeta))-grad3(x,y,prvsbeta)
+    e<-deltabeta-(P%*%g)
+    eg<-as.numeric(t(e)%*%g)
+    denom<-as.numeric((t(g)%*%deltabeta))
+    P<-P+ ((eg*deltabeta%*%t(deltabeta))*(denom^2)) - denom*((e%*%t(deltabeta))+(deltabeta%*%t(e)))
+    
+    
+    #if(all(is.na(newBeta))) {
+     # return (previousBeta)
+    #}
+   if(all(abs(prvsbeta-deltabeta) < tol)) { #this is the other termination criteria we can use
+    break;
+   }
+    prvsbeta<-prvsbeta + deltabeta #update after checking tolerance
+  }
+  end=proc.time()
+  return (list("newBeta" = prvsbeta, index, (end-start)))
+}
+BFGSresult<-bfgsnewt(x,y,0.01)
+
+#EXTRACTING INFORMATION
+BFGSresult[[2]] #iterations
+
+BFGSresult[[3]][[3]] #elapsed
+
+BFGSresult[[1]] #optimized betas
+
+#MSE
+mean((trubet-unlist(BFGSresult[[1]]))^2)
+
+```
+This algorithm runs MUCH quicker (2.4 sec) compared to the 2000+ seconds for regular MV Newton. A large improvement.
+In terms of accuracy, we do much better too. MSE = 0.297. 
+
+
+### COMPARISON 
+Based on this output, I would argue that STOCHASTIC GRADIENT DESCENT DID THE BEST IN TERMS OF BALANCING COMPUTATIONAL COST AND ACCURACY!
+
+
+
+
